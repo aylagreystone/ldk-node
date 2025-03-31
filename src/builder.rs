@@ -34,6 +34,7 @@ use crate::wallet::persist::KVStoreWalletPersister;
 use crate::wallet::Wallet;
 use crate::{io, Node, NodeMetrics};
 
+use bdk_chain::{BlockId, TxUpdate};
 use lightning::chain::{chainmonitor, BestBlock, Watch};
 use lightning::io::Cursor;
 use lightning::ln::channelmanager::{self, ChainParameters, ChannelManagerReadArgs};
@@ -56,8 +57,8 @@ use lightning::util::sweep::OutputSweeper;
 use lightning_persister::fs_store::FilesystemStore;
 
 use bdk_wallet::template::Bip84;
-use bdk_wallet::KeychainKind;
 use bdk_wallet::Wallet as BdkWallet;
+use bdk_wallet::{KeychainKind, Update};
 
 use bip39::Mnemonic;
 
@@ -65,7 +66,7 @@ use bitcoin::secp256k1::PublicKey;
 use bitcoin::{BlockHash, Network};
 
 use bitcoin::bip32::{ChildNumber, Xpriv};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::convert::TryInto;
 use std::default::Default;
 use std::fmt;
@@ -458,7 +459,7 @@ impl NodeBuilder {
 			)
 			.map_err(|_| BuildError::KVStoreSetupFailed)?,
 		);
-		self.build_with_store(kv_store)
+		self.build_with_store(kv_store, None)
 	}
 
 	/// Builds a [`Node`] instance with a [`FilesystemStore`] backend and according to the options
@@ -470,7 +471,7 @@ impl NodeBuilder {
 		fs::create_dir_all(storage_dir_path.clone())
 			.map_err(|_| BuildError::StoragePathAccessFailed)?;
 		let kv_store = Arc::new(FilesystemStore::new(storage_dir_path));
-		self.build_with_store(kv_store)
+		self.build_with_store(kv_store, None)
 	}
 
 	/// Builds a [`Node`] instance with a [VSS] backend and according to the options
@@ -597,11 +598,14 @@ impl NodeBuilder {
 			seed_bytes,
 			logger,
 			Arc::new(vss_store),
+			None,
 		)
 	}
 
 	/// Builds a [`Node`] instance according to the options previously configured.
-	pub fn build_with_store(&self, kv_store: Arc<DynStore>) -> Result<Node, BuildError> {
+	pub fn build_with_store(
+		&self, kv_store: Arc<DynStore>, runtime: Option<Arc<tokio::runtime::Runtime>>,
+	) -> Result<Node, BuildError> {
 		let logger = setup_logger(&self.log_writer_config, &self.config)?;
 
 		let seed_bytes = seed_bytes_from_config(
@@ -619,6 +623,7 @@ impl NodeBuilder {
 			seed_bytes,
 			logger,
 			kv_store,
+			runtime,
 		)
 	}
 }
@@ -909,7 +914,7 @@ fn build_with_store_internal(
 	config: Arc<Config>, chain_data_source_config: Option<&ChainDataSourceConfig>,
 	gossip_source_config: Option<&GossipSourceConfig>,
 	liquidity_source_config: Option<&LiquiditySourceConfig>, seed_bytes: [u8; 64],
-	logger: Arc<Logger>, kv_store: Arc<DynStore>,
+	logger: Arc<Logger>, kv_store: Arc<DynStore>, runtime: Option<Arc<tokio::runtime::Runtime>>,
 ) -> Result<Node, BuildError> {
 	if let Err(err) = may_announce_channel(&config) {
 		if config.announcement_addresses.is_some() {
@@ -1055,6 +1060,25 @@ fn build_with_store_internal(
 				Arc::clone(&node_metrics),
 			))
 		},
+	};
+
+	let tip = if let Some(runtime) = runtime {
+		let (tip_hash, tip_height) = runtime.block_on(chain_source.get_best_block()).unwrap();
+		let mut wallet_tip = wallet.latest_checkpoint();
+		if wallet_tip.height() == 0 && tip_height > 100 {
+			wallet_tip =
+				wallet_tip.extend([BlockId { height: tip_height, hash: tip_hash }]).unwrap();
+			wallet
+				.apply_update(Update {
+					last_active_indices: BTreeMap::new(),
+					tx_update: TxUpdate::default(),
+					chain: Some(wallet_tip),
+				})
+				.unwrap();
+		}
+		(tip_hash, tip_height)
+	} else {
+		(bitcoin::blockdata::constants::genesis_block(config.network).block_hash(), 0)
 	};
 
 	let runtime = Arc::new(RwLock::new(None));
@@ -1203,12 +1227,12 @@ fn build_with_store_internal(
 			channel_manager
 		} else {
 			// We're starting a fresh node.
-			let genesis_block_hash =
-				bitcoin::blockdata::constants::genesis_block(config.network).block_hash();
+			// let genesis_block_hash =
+			//	bitcoin::blockdata::constants::genesis_block(config.network).block_hash();
 
 			let chain_params = ChainParameters {
 				network: config.network.into(),
-				best_block: BestBlock::new(genesis_block_hash, 0),
+				best_block: BestBlock::new(tip.0, tip.1),
 			};
 			channelmanager::ChannelManager::new(
 				Arc::clone(&fee_estimator),

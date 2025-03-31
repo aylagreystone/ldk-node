@@ -34,7 +34,7 @@ use lightning_transaction_sync::EsploraSyncClient;
 use lightning_block_sync::gossip::UtxoSource;
 use lightning_block_sync::init::{synchronize_listeners, validate_best_block_header};
 use lightning_block_sync::poll::{ChainPoller, ChainTip, ValidatedBlockHeader};
-use lightning_block_sync::SpvClient;
+use lightning_block_sync::{BlockSource, SpvClient};
 
 use bdk_esplora::EsploraAsyncExt;
 
@@ -1138,6 +1138,20 @@ impl ChainSource {
 						}
 					}
 				}
+			},
+		}
+	}
+
+	pub(crate) async fn get_best_block(&self) -> Result<(bitcoin::BlockHash, u32), Error> {
+		match self {
+			Self::Esplora { esplora_client, .. } => {
+				let tip_hash = esplora_client.get_tip_hash().await.unwrap();
+				let tip_height = esplora_client.get_height().await.unwrap();
+				Ok((tip_hash, tip_height))
+			},
+			Self::BitcoindRpc { bitcoind_rpc_client, .. } => {
+				let tip = bitcoind_rpc_client.get_best_block().await.unwrap();
+				Ok((tip.0, tip.1.unwrap_or(0)))
 			},
 		}
 	}

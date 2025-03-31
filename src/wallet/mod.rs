@@ -5,6 +5,7 @@
 // http://opensource.org/licenses/MIT>, at your option. You may not use this file except in
 // accordance with one or both of these licenses.
 
+use bdk_chain::CheckPoint;
 use persist::KVStoreWalletPersister;
 
 use crate::logger::{log_debug, log_error, log_info, log_trace, LdkLogger, Logger};
@@ -101,6 +102,10 @@ where
 	pub(crate) fn current_best_block(&self) -> BestBlock {
 		let checkpoint = self.inner.lock().unwrap().latest_checkpoint();
 		BestBlock { block_hash: checkpoint.hash(), height: checkpoint.height() }
+	}
+
+	pub(crate) fn latest_checkpoint(&self) -> CheckPoint {
+		self.inner.lock().unwrap().latest_checkpoint()
 	}
 
 	pub(crate) fn apply_update(&self, update: impl Into<Update>) -> Result<(), Error> {
