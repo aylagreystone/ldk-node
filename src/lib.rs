@@ -99,6 +99,7 @@ mod wallet;
 pub use bip39;
 pub use bitcoin;
 pub use lightning;
+use lightning::chain::transaction::OutPoint;
 pub use lightning_invoice;
 pub use lightning_liquidity;
 pub use lightning_types;
@@ -202,6 +203,15 @@ pub struct Node {
 }
 
 impl Node {
+	/// Expose ChainMonitor's channel_monitor_updated method so one can implement async persistence with a custom KVStore.
+	pub fn channel_monitor_updated(
+		&self, funding_txo: OutPoint, completed_update_id: u64,
+	) -> Result<(), Error> {
+		self.chain_monitor
+			.channel_monitor_updated(funding_txo, completed_update_id)
+			.map_err(|_| Error::InvalidChannelId)
+	}
+
 	/// Starts the necessary background tasks, such as handling events coming from user input,
 	/// LDK/BDK, and the peer-to-peer network.
 	///
